@@ -1,0 +1,12 @@
+[package]
+name = "corrosive-fog"
+version = "0.1.0"
+authors = ["Björn Löfroth <bjorn.lofroth@gmail.com>"]
+
+[dependencies]
+rocket = "0.2.9"
+rocket_codegen = "0.2.9"
+rocket_contrib = "0.2.9"
+serde = "0.9"
+serde_json = "0.9"
+serde_derive = "0.9"
