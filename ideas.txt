@@ -1,0 +1,13 @@
+* diesel persistence
+  * https://mgattozzi.com/diesel-powered-rocket (but with State<DB> instead)
+
+* deploy with nix? like pijul?
+
+* parse and display note format in web gui
+    * https://wiki.gnome.org/Apps/Tomboy/NoteXmlFormat
+    * https://github.com/tomboy-notes/tomdroid/blob/master/xml-schema/tomboy-notes-0.3.rng (relax NG)
+    * html5ever? quirksmode?
+
+* compare sync logic to Rainy
+    * https://github.com/Dynalon/Rainy/blob/master/Rainy/WebService/NoteService.cs
+    * https://github.com/Dynalon/Rainy/tree/master/sample_notes

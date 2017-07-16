@@ -2,32 +2,27 @@
 #![plugin(rocket_codegen)]
 
 extern crate rocket;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
-extern crate serde_json;
 extern crate rocket_contrib;
 extern crate corrosive_fog;
 
-use rocket::{State};
-use rocket_contrib::{JSON};
+use rocket::{Rocket, State};
+use rocket_contrib::{Json};
+use std::sync::{RwLock};
 use corrosive_fog::model::*;
 use corrosive_fog::persist::{NoteRepository, InMemNoteRepository};
 
-// TODO: diesel
-// https://mgattozzi.com/diesel-powered-rocket
-// but with State<DB> instead
 
-// TODO: nix? like pijul?
+// TODO: move into inmem implementation?
+type SyncedRepo = RwLock<InMemNoteRepository>;
 
 #[get("/")]
-fn index() -> JSON<ApiRoot> {
-    JSON(Default::default())
+fn index() -> Json<ApiRoot> {
+    Json(Default::default())
 }
 
 #[get("/<username>")]
-fn user(username: &str) -> JSON<User> { 
-    JSON(User {
+fn user(username: String) -> Json<User> { 
+    Json(User {
         user_name : username.into(),
         first_name : "sally".into(),
         last_name : "walters".into(),
@@ -41,10 +36,11 @@ fn user(username: &str) -> JSON<User> {
 }
 
 #[get("/<username>/notes")]
-fn get_user_notes(username: &str, note_repo: State<InMemNoteRepository>) -> Result<JSON<Notes>, String> {
-    match note_repo.get_notes_for_user(username.into()) {
+fn get_user_notes(username: String, note_repo: State<SyncedRepo>) -> Result<Json<Notes>, String> {
+    let locked_repo = note_repo.read().unwrap();
+    match locked_repo.get_notes_for_user(username.into()) {
         Ok(notes) =>
-            Ok(JSON(Notes {
+            Ok(Json(Notes {
                 notes: notes,
                 ..Default::default()
             })),
@@ -53,35 +49,129 @@ fn get_user_notes(username: &str, note_repo: State<InMemNoteRepository>) -> Resu
 }
 
 #[get("/<username>/notes/<guid>")]
-fn get_user_note(username: &str, guid: &str) -> JSON<NoteWrapper> { 
-    JSON(NoteWrapper {
-        note: vec![Note {
-            guid: guid.into(),
-            ..Default::default()
-        }]
-    })
+fn get_user_note(username: String, guid: String, note_repo: State<SyncedRepo>) -> Result<Json<NoteWrapper>, String> {
+    let locked_repo = note_repo.read().unwrap();
+    match locked_repo.get_note(username.into(), guid.into()) {
+        Ok(note) => Ok(Json(NoteWrapper {
+            note: vec![note]
+        })),
+        Err(msg) => Err(msg)
+    }
 }
 
 #[put("/<username>/notes", data = "<note_changes>")]
-fn put_user_notes(username: &str, note_changes: JSON<NoteChanges>) { 
-    println!("{:?}", note_changes);
+fn put_user_notes(username: String, note_changes: Json<NoteChanges>,
+        note_repo: State<SyncedRepo>) -> Result<(),String> {
+    let mut locked_repo = note_repo.write().unwrap();
+
+    let notes = note_changes.into_inner().note_changes.into_iter();
+    for note in notes {
+        locked_repo.upsert_note(username.clone(), note)
+            .map(|_| ())?
+    }
+
+    Ok(())
 }
 
 fn main() {
-    let mut note_repo = InMemNoteRepository::new();
-    note_repo.add_user("sally".into());
-    note_repo.upsert_note("sally".into(), example_note());
-
-    rocket::ignite()
-        .manage(note_repo)
-        .mount("/api/1.0/", 
-            routes![index, user, get_user_notes, get_user_note, put_user_notes])
-        .launch();
+   mount_routes().launch();
 }
 
-fn example_note() -> Note { 
-    Note {
-        guid: "123".into(),
-        ..Default::default()
+fn mount_routes() -> Rocket {
+    let mut note_repo = InMemNoteRepository::new();
+    note_repo.add_user("sally".into());
+    let synced_repo: SyncedRepo = RwLock::new(note_repo);
+
+    rocket::ignite()
+        .manage(synced_repo)
+        .mount("/api/1.0/", 
+            routes![index, user, get_user_notes, get_user_note, put_user_notes])
+}
+
+#[cfg(test)]
+mod test {
+    use super::mount_routes;
+    use rocket::http::{Status, Method};
+    use rocket::http::ContentType;
+    use rocket::local::Client;
+
+    #[test]
+    fn test_api_root() {
+        let rocket = mount_routes();
+        let client = Client::new(rocket).expect("valid rocket instance");
+        let mut response = client.get("/api/1.0/").dispatch();
+
+        assert_eq!(response.status(), Status::Ok);
+    }
+
+    #[test]
+    fn test_user() {
+        let rocket = mount_routes();
+
+        let client = Client::new(rocket).expect("valid rocket instance");
+        let response = client.get("/api/1.0/sally").dispatch();
+
+        assert_eq!(response.status(), Status::Ok);
+    }
+
+    #[test]
+    fn test_user_notes() {
+        let rocket = mount_routes();
+
+        let client = Client::new(rocket).expect("valid rocket instance");
+        let response = client.get("/api/1.0/sally/notes").dispatch();
+
+        assert_eq!(response.status(), Status::Ok);
+    }
+
+    const UPDATE_TEMPLATE: &str = r#"{
+            "lastest-sync-revision": 0,
+            "note-changes": [
+                {
+                    "guid": "{NOTE_GUID}",
+                    "ref": null,
+                    "title": "",
+                    "note-content": "",
+                    "note-content-version": 0,
+                    "last-change-date": "",
+                    "last-metadata-change-date": "",
+                    "create-date": "",
+                    "last-sync-revision": "",
+                    "open-on-startup": false,
+                    "pinned": false,
+                    "tags": []
+                }
+            ]
+        }"#;
+
+    #[test]
+    fn test_put_user_notes() {
+        let rocket = mount_routes();
+
+        let client = Client::new(rocket).expect("valid rocket instance");
+
+        let note1 = UPDATE_TEMPLATE.replace("NOTE_GUID", "123");
+        let note2 = UPDATE_TEMPLATE.replace("NOTE_GUID", "124");
+
+        let response = client.put("/api/1.0/sally/notes")
+            .header(ContentType::JSON)
+            .body(note1)
+            .dispatch();
+
+        assert_eq!(response.status(), Status::Ok);
+
+        let response = client.put("/api/1.0/sally/notes")
+            .header(ContentType::JSON)
+            .body(note2)
+            .dispatch();
+
+        assert_eq!(response.status(), Status::Ok);
+
+        let mut response = client.get("/api/1.0/sally/notes")
+            .dispatch();
+        let body_str = response.body_string().expect("some body");
+        
+        assert!(body_str.contains("123"));
+        assert!(body_str.contains("124"));
     }
 }
