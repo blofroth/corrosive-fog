@@ -7,13 +7,12 @@ extern crate corrosive_fog;
 
 use rocket::{Rocket, State};
 use rocket_contrib::{Json};
-use std::sync::{RwLock};
 use corrosive_fog::model::*;
 use corrosive_fog::persist::{NoteRepository, InMemNoteRepository};
 
 
 // TODO: move into inmem implementation?
-type SyncedRepo = RwLock<InMemNoteRepository>;
+type SyncedRepo = InMemNoteRepository;
 
 #[get("/")]
 fn index() -> Json<ApiRoot> {
@@ -37,8 +36,7 @@ fn user(username: String) -> Json<User> {
 
 #[get("/<username>/notes")]
 fn get_user_notes(username: String, note_repo: State<SyncedRepo>) -> Result<Json<Notes>, String> {
-    let locked_repo = note_repo.read().unwrap();
-    match locked_repo.get_notes_for_user(username.into()) {
+    match note_repo.get_notes_for_user(username.into()) {
         Ok(notes) =>
             Ok(Json(Notes {
                 notes: notes,
@@ -50,8 +48,7 @@ fn get_user_notes(username: String, note_repo: State<SyncedRepo>) -> Result<Json
 
 #[get("/<username>/notes/<guid>")]
 fn get_user_note(username: String, guid: String, note_repo: State<SyncedRepo>) -> Result<Json<NoteWrapper>, String> {
-    let locked_repo = note_repo.read().unwrap();
-    match locked_repo.get_note(username.into(), guid.into()) {
+    match note_repo.get_note(username.into(), guid.into()) {
         Ok(note) => Ok(Json(NoteWrapper {
             note: vec![note]
         })),
@@ -62,11 +59,11 @@ fn get_user_note(username: String, guid: String, note_repo: State<SyncedRepo>) -
 #[put("/<username>/notes", data = "<note_changes>")]
 fn put_user_notes(username: String, note_changes: Json<NoteChanges>,
         note_repo: State<SyncedRepo>) -> Result<(),String> {
-    let mut locked_repo = note_repo.write().unwrap();
+    
 
     let notes = note_changes.into_inner().note_changes.into_iter();
     for note in notes {
-        locked_repo.upsert_note(username.clone(), note)
+        note_repo.upsert_note(username.clone(), note)
             .map(|_| ())?
     }
 
@@ -78,9 +75,8 @@ fn main() {
 }
 
 fn mount_routes() -> Rocket {
-    let mut note_repo = InMemNoteRepository::new();
-    note_repo.add_user("sally".into());
-    let synced_repo: SyncedRepo = RwLock::new(note_repo);
+    let mut synced_repo = InMemNoteRepository::new();
+    synced_repo.add_user("sally".into());
 
     rocket::ignite()
         .manage(synced_repo)
