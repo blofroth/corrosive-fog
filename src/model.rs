@@ -17,7 +17,7 @@ pub struct Note {
     pub note_ref: Option<String>,
     pub title: String,
     pub note_content: String,
-    pub note_content_version: f32,
+    pub note_content_version: f64,
     // TODO: date with custom serializer?
     pub last_change_date: String,
     pub last_metadata_change_date: String,

@@ -4,15 +4,17 @@
 extern crate rocket;
 extern crate rocket_contrib;
 extern crate corrosive_fog;
+extern crate dotenv;
 
 use rocket::{Rocket, State};
 use rocket_contrib::{Json};
 use corrosive_fog::model::*;
-use corrosive_fog::persist::{NoteRepository, InMemNoteRepository};
+use corrosive_fog::persist::{NoteRepository, PostgresNoteRepository};
+use corrosive_fog::sync::SyncController;
+use dotenv::dotenv;
 
-
-// TODO: move into inmem implementation?
-type SyncedRepo = InMemNoteRepository;
+type FixedRepo = NoteRepository + Sync + Send + 'static;
+type NoteSyncController = SyncController<'static, Box<FixedRepo>>;
 
 #[get("/")]
 fn index() -> Json<ApiRoot> {
@@ -35,7 +37,7 @@ fn user(username: String) -> Json<User> {
 }
 
 #[get("/<username>/notes")]
-fn get_user_notes(username: String, note_repo: State<SyncedRepo>) -> Result<Json<Notes>, String> {
+fn get_user_notes(username: String, note_repo: State<NoteSyncController>) -> Result<Json<Notes>, String> {
     match note_repo.get_notes_for_user(username.into()) {
         Ok(notes) =>
             Ok(Json(Notes {
@@ -47,7 +49,7 @@ fn get_user_notes(username: String, note_repo: State<SyncedRepo>) -> Result<Json
 }
 
 #[get("/<username>/notes/<guid>")]
-fn get_user_note(username: String, guid: String, note_repo: State<SyncedRepo>) -> Result<Json<NoteWrapper>, String> {
+fn get_user_note(username: String, guid: String, note_repo: State<NoteSyncController>) -> Result<Json<NoteWrapper>, String> {
     match note_repo.get_note(username.into(), guid.into()) {
         Ok(note) => Ok(Json(NoteWrapper {
             note: vec![note]
@@ -58,7 +60,7 @@ fn get_user_note(username: String, guid: String, note_repo: State<SyncedRepo>) -
 
 #[put("/<username>/notes", data = "<note_changes>")]
 fn put_user_notes(username: String, note_changes: Json<NoteChanges>,
-        note_repo: State<SyncedRepo>) -> Result<(),String> {
+        note_repo: State<NoteSyncController>) -> Result<(),String> {
     
 
     let notes = note_changes.into_inner().note_changes.into_iter();
@@ -71,15 +73,23 @@ fn put_user_notes(username: String, note_changes: Json<NoteChanges>,
 }
 
 fn main() {
-   mount_routes().launch();
+    dotenv().ok();
+
+    let database_url = env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set");
+
+    let repo = PostgresNoteRepository::new(database_url);
+    
+    mount_routes(repo).launch();
 }
 
-fn mount_routes() -> Rocket {
-    let mut synced_repo = InMemNoteRepository::new();
-    synced_repo.add_user("sally".into());
+fn mount_routes<T>(repo: T) -> Rocket 
+    where T: NoteRepository + Sync + Send + 'static {
+
+    let sync_controller = SyncController::new(&repo);
 
     rocket::ignite()
-        .manage(synced_repo)
+        .manage(sync_controller)
         .mount("/api/1.0/", 
             routes![index, user, get_user_notes, get_user_note, put_user_notes])
 }
